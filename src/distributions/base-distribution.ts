@@ -1,3 +1,4 @@
+import {v4 as uuidv4} from 'uuid';
 import * as tc from '@actions/tool-cache';
 import * as hc from '@actions/http-client';
 import * as core from '@actions/core';
@@ -111,7 +112,11 @@ export default abstract class BaseDistribution {
         ? `node-v${version}-win-${osArch}`
         : `node-v${version}-${this.osPlat}-${osArch}`;
     const urlFileName: string =
-      this.osPlat == 'win32' ? `${fileName}.7z` : `${fileName}.tar.gz`;
+      this.osPlat == 'win32'
+        ? this.nodeInfo.arch === 'arm64'
+          ? `${fileName}.zip`
+          : `${fileName}.7z`
+        : `${fileName}.tar.gz`;
     const initialUrl = this.getDistributionUrl();
     const url = `${initialUrl}/v${version}/${urlFileName}`;
 
@@ -152,7 +157,7 @@ export default abstract class BaseDistribution {
   }
 
   protected validRange(versionSpec: string) {
-    let options: semver.Options | undefined;
+    let options: semver.RangeOptions | undefined;
     const c = semver.clean(versionSpec) || '';
     const valid = semver.valid(c) ?? versionSpec;
 
@@ -166,9 +171,8 @@ export default abstract class BaseDistribution {
     const initialUrl = this.getDistributionUrl();
     const osArch: string = this.translateArchToDistUrl(arch);
 
-    // Create temporary folder to download in to
-    const tempDownloadFolder: string =
-      'temp_' + Math.floor(Math.random() * 2000000000);
+    // Create temporary folder to download to
+    const tempDownloadFolder = `temp_${uuidv4()}`;
     const tempDirectory = process.env['RUNNER_TEMP'] || '';
     assert.ok(tempDirectory, 'Expected RUNNER_TEMP to be defined');
     const tempDir: string = path.join(tempDirectory, tempDownloadFolder);
@@ -215,12 +219,24 @@ export default abstract class BaseDistribution {
     let extPath: string;
     info = info || ({} as INodeVersionInfo); // satisfy compiler, never null when reaches here
     if (this.osPlat == 'win32') {
-      const _7zPath = path.join(__dirname, '../..', 'externals', '7zr.exe');
-      extPath = await tc.extract7z(downloadPath, undefined, _7zPath);
+      const extension = this.nodeInfo.arch === 'arm64' ? '.zip' : '.7z';
+      // Rename archive to add extension because after downloading
+      // archive does not contain extension type and it leads to some issues
+      // on Windows runners without PowerShell Core.
+      //
+      // For default PowerShell Windows it should contain extension type to unpack it.
+      if (extension === '.zip') {
+        const renamedArchive = `${downloadPath}.zip`;
+        fs.renameSync(downloadPath, renamedArchive);
+        extPath = await tc.extractZip(renamedArchive);
+      } else {
+        const _7zPath = path.join(__dirname, '../..', 'externals', '7zr.exe');
+        extPath = await tc.extract7z(downloadPath, undefined, _7zPath);
+      }
       // 7z extracts to folder matching file name
       const nestedPath = path.join(
         extPath,
-        path.basename(info.fileName, '.7z')
+        path.basename(info.fileName, extension)
       );
       if (fs.existsSync(nestedPath)) {
         extPath = nestedPath;
@@ -260,7 +276,11 @@ export default abstract class BaseDistribution {
         dataFileName = `osx-${osArch}-tar`;
         break;
       case 'win32':
-        dataFileName = `win-${osArch}-exe`;
+        if (this.nodeInfo.arch === 'arm64') {
+          dataFileName = `win-${osArch}-zip`;
+        } else {
+          dataFileName = `win-${osArch}-exe`;
+        }
         break;
       default:
         throw new Error(`Unexpected OS '${this.osPlat}'`);
